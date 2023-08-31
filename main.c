@@ -1,113 +1,57 @@
 //
 // ISBIC - Incredibly Simple Bitonal Image Compression
-// by Larry Bank
+// Copyright (c) 2023 BitBank Software, Inc.
+// written by Larry Bank
 // project started 30/8/2023
 //
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
+#include "isbic.h"
 
-typedef struct tagisbicimage
+//
+// Write a Windows BMP file header
+// returns the pitch needed when writing the pixel data
+//
+int WriteBMP(FILE *outfile, int width, int height, int bpp)
 {
-  uint8_t *pImage;
-  int iWidth, iHeight, iPitch;
-  int x, y;
-  uint8_t ucColor; // current color
-} ISBICIMG;
-// the maximum length of run we can store in a single byte of output
-#define MAX_RUN 71
-//
-// 2 basic encoding blocks:
-// A: 0CLLLLLL (C = color, L = run length (8-71)
-// B: 1PPPPPPP (P = 7 non-repeating pixels)
-//
-
-//
-// Read a single pixel and advance the x,y values
-//
-uint8_t isbicRead1Pixel(ISBICIMG *pIMG)
-{
-uint8_t uc, *s;
-
-	if (pIMG->y >= pIMG->iHeight) return 0; // allow reads past end of image
-        s = pIMG->pImage;
-        s += (pIMG->x >> 3) + (pIMG->y * pIMG->iPitch);
-        uc = (s[0] & (0x80 >> (pIMG->x & 7))); // return in lowest bit position
-        // advance X,Y
-        pIMG->x++;
-        if (pIMG->x == pIMG->iWidth) {
-		pIMG->x = 0;
-                pIMG->y++;
-        }
-        return (uc != 0);
-} /* isbicRead1Pixel() */
-
-//
-// Count the length of the current run of pixels
-// It can be 1
-//
-int isbicGetRun(ISBICIMG *pIMG)
-{
-int iRun = 0;
-int x, y; // keep original x/y in case we get a short run
-uint8_t ucColor;
-
-        x = pIMG->x; y = pIMG->y; // keep starting point
-	pIMG->ucColor = ucColor = isbicRead1Pixel(pIMG); // starting color to match
-        while (iRun < MAX_RUN && pIMG->ucColor == ucColor && pIMG->y < pIMG->iHeight) {
-		iRun++;
-		ucColor = isbicRead1Pixel(pIMG);
-        }
-        if (iRun < 8) { // no compression, reset x,y to start
-		pIMG->x = x; pIMG->y = y;
-        } else { // a good run, but we still need to back up 1 pixel
-		pIMG->x--;
-                if (pIMG->x < 0) {
-			pIMG->x = pIMG->iWidth-1;
-			if (pIMG->y != pIMG->iHeight) // don't decrement the last pixel or it will loop forever
-				pIMG->y--;
-		}
-        }
-return iRun;
-} /* isbicGetRun() */
-
-//
-// Compress a bitonal image into ISBIC format
-// returns the number of bytes of compressed data
-//
-int isbicCompress(uint8_t *pDest, ISBICIMG *pIMG)
-{
-int iOutSize = 0;
-int iRun;
-uint8_t *d, uc;
-
-printf("entering isbicCompress, width=%d, height=%d, pitch=%d\n", pIMG->iWidth, pIMG->iHeight, pIMG->iPitch);
-	d = pDest;
-        pIMG->x = pIMG->y = 0;
-	while (pIMG->x < pIMG->iWidth && pIMG->y < pIMG->iHeight) { // encode loop
-//printf("x/y = %d,%d, iRun = ", pIMG->x, pIMG->y);
-		iRun = isbicGetRun(pIMG);  
-//printf("%d, new x,y = %d, %d\n", iRun, pIMG->x, pIMG->y);
-                if (iRun < 8) { // no compression, encode the next 7 pixels
-                        uc = 0;
-                        for (int i=6; i>=0; i--) {
-                            uc |= (isbicRead1Pixel(pIMG) << i);
-			}
-                	*d++ = (0x80 | uc);
-                } else { // encode the run
-                	uc = (pIMG->ucColor << 6); // high bit is color
-                        uc |= (iRun - 8);
-                        *d++ = uc;
-                }
-	} // while encoding
-	iOutSize = (int)(d - pDest);
-return iOutSize;
-} /* isbicCompress() */
-
-void isbicDecompress(uint8_t *pSrc, int iLen, uint8_t *pDest, int iWidth, int iHeight, int iPitch)
-{
-} /* isbicDecompress() */
+    int lsize, i, iHeaderSize, iBodySize;
+    uint8_t pBuf[1024]; // holds BMP header
+ 
+    lsize = ((width * bpp) + 7)/8;
+    lsize = (lsize + 3) & 0xfffc; // DWORD aligned
+    iHeaderSize = 54;
+    iHeaderSize += (1<<(bpp+2)); // palette size
+    iBodySize = lsize * height;
+    i = iBodySize + iHeaderSize; // datasize
+    memset(pBuf, 0, 54);
+    pBuf[0] = 'B';
+    pBuf[1] = 'M';
+    pBuf[2] = i & 0xff;     // 4 bytes of file size
+    pBuf[3] = (i >> 8) & 0xff;
+    pBuf[4] = (i >> 16) & 0xff;
+    pBuf[5] = (i >> 24) & 0xff;
+    /* Offset to data bits */
+    pBuf[10] = iHeaderSize & 0xff;
+    pBuf[11] = (unsigned char)(iHeaderSize >> 8);
+    pBuf[14] = 0x28;
+    pBuf[18] = width & 0xff; // xsize low
+    pBuf[19] = (unsigned char)(width >> 8); // xsize high
+    i = 0-height; // top down bitmap
+    pBuf[22] = i & 0xff; // ysize low
+    pBuf[23] = (unsigned char)(i >> 8); // ysize high
+    pBuf[24] = 0xff;
+    pBuf[25] = 0xff;
+    pBuf[26] = 1; // number of planes
+    pBuf[28] = (uint8_t)bpp;
+    pBuf[30] = 0; // uncompressed
+    i = iBodySize;
+    pBuf[34] = i & 0xff;  // data size
+    pBuf[35] = (i >> 8) & 0xff;
+    pBuf[36] = (i >> 16) & 0xff;
+    pBuf[37] = (i >> 24) & 0xff;
+    pBuf[54] = pBuf[55] = pBuf[56] = pBuf[57] = pBuf[61] = 0; // palette
+    pBuf[58] = pBuf[59] = pBuf[60] = 0xff;
+    fwrite(pBuf, 1, iHeaderSize, outfile);
+    return lsize;
+} /* WriteBMP() */
 
 //
 // Read a Windows BMP file into memory
@@ -118,21 +62,21 @@ uint8_t * ReadBMP(const char *fname, int *width, int *height, int *bpp, unsigned
     uint8_t *s, *d, *pTemp, *pBitmap;
     int pitch, bytewidth;
     int iSize, iDelta, iColorsUsed;
-    FILE *infile;
+    FILE *thefile;
    
-    infile = fopen(fname, "r+b");
-    if (infile == NULL) {  
+    thefile = fopen(fname, "r+b");
+    if (thefile == NULL) {  
         printf("Error opening input file %s\n", fname);
         return NULL;
     }
     // Read the bitmap into RAM
-    fseek(infile, 0, SEEK_END);
-    iSize = (int)ftell(infile);
-    fseek(infile, 0, SEEK_SET);
+    fseek(thefile, 0, SEEK_END);
+    iSize = (int)ftell(thefile);
+    fseek(thefile, 0, SEEK_SET);
     pBitmap = (uint8_t *)malloc(iSize);
     pTemp = (uint8_t *)malloc(iSize);
-    fread(pTemp, 1, iSize, infile);
-    fclose(infile);
+    fread(pTemp, 1, iSize, thefile);
+    fclose(thefile);
   
     if (pTemp[0] != 'B' || pTemp[1] != 'M' || pTemp[14] < 0x28) {
         free(pBitmap);
@@ -194,20 +138,23 @@ uint8_t * ReadBMP(const char *fname, int *width, int *height, int *bpp, unsigned
 } /* ReadBMP() */
 
 int main(int argc, const char * argv[]) {
-    int iDataSize, iBpp;
-    //FILE *ohandle;
+    char *s;
+    int i, x, y, iDataSize, iBpp;
+    FILE *thefile;
     uint8_t *pOutput;
     int iWidth, iHeight;
-    uint8_t *pBitmap;
+    uint8_t *pTemp, *pBitmap;
     ISBICIMG state;
   
-    if (argc != 3 && argc != 2) {
+    if (argc != 3) {
        printf("ISBIC codec library demo program\n");
        printf("Usage: isbic_demo <infile> <outfile>\n");
        printf("The input and output files can be either WinBMP (*.bmp) or ISBIC (*.isb)\n");
        return 0;
     }
-
+    s = (char *)argv[1];
+    i = strlen(s);
+    if (memcmp(&s[i-4], ".BMP", 4) == 0 || memcmp(&s[i-4], ".bmp", 4) == 0) { // convert from BMP to ISBIC
     pBitmap = ReadBMP(argv[1], &iWidth, &iHeight, &iBpp, NULL);
        if (pBitmap == NULL)
        {
@@ -223,27 +170,56 @@ int main(int argc, const char * argv[]) {
         state.pImage = pBitmap;
         state.iPitch = (iWidth + 7) >> 3;
     pOutput = malloc(iWidth * iHeight); // output buffer
-    // DEBUG
-    {
-	int iW=0, iB=0;
-	int i, iDataSize;
-	iDataSize = state.iPitch * state.iHeight;
-	for (i=0; i<iDataSize; i++) {
-		if (pBitmap[i] == 0) iB++;
-		else if (pBitmap[i] == 0xff) iW++;
-	}
-	printf("0x00 = %d, 0xff = %d, total = %d\n", iB, iW, iDataSize);
-    }
     printf("Compressing a %d x %d bitmap as ISBIC data\n", iWidth, iHeight);
     iDataSize = isbicCompress(pOutput, &state);
         printf("ISBIC image successfully created. %d bytes = %d:1 compression\n", iDataSize, (state.iPitch*iHeight) / iDataSize);
-//        ohandle = fopen(argv[iOutIndex], "w+b");
-//        if (ohandle != NULL) {
-//            fwrite(pOutput, 1, iDataSize, ohandle);
-//            fclose(ohandle);
-//        }
+        thefile = fopen(argv[2], "w+b");
+        if (thefile != NULL) {
+            fwrite(pOutput, 1, iDataSize, thefile);
+            fclose(thefile);
+        } else {
+		printf("Error opening file %s\n", argv[2]);
+	}
         free(pOutput);
     free(pBitmap);
+    } else { // convert from ISBIC to BMP
+	printf("Converting from ISBIC to BMP\n");
+    thefile = fopen(argv[1], "r+b");
+    if (thefile == NULL) {   
+        printf("Error opening input file %s\n", argv[1]);
+        return -1; 
+    }
+    // Read the file into RAM
+    fseek(thefile, 0, SEEK_END);
+    iDataSize = (int)ftell(thefile);
+    fseek(thefile, 0, SEEK_SET);
+    pTemp = (uint8_t *)malloc(iDataSize);
+    fread(pTemp, 1, iDataSize, thefile);
+    fclose(thefile);
+	if (isbicDecodeInit(&state, pTemp) == 0) {
+		printf("The ISBIC file has a problem...aborting.\n");
+		return -1;
+	}
+	thefile = fopen(argv[2], "w+b");
+	if (thefile == NULL) {
+		printf("Error creating output file %s\n", argv[2]);
+		return -1;
+	}
+        printf("Creating %d x %d 1bpp Windows BMP file\n", state.iWidth, state.iHeight);
+        i = WriteBMP(thefile, state.iWidth, state.iHeight, 1);
+	pBitmap = malloc(i); // allocate memory to hold each bitmap line
+	for (y=0; y<state.iHeight; y++) {
+		memset(pBitmap, 0, i);
+		for (x=0; x<state.iWidth; x++) {
+			if (isbicDecode1Pixel(&state))
+				pBitmap[x>>3] |= 0x80 >> (x & 7);
+		} // for x
+		fwrite(pBitmap, 1, i, thefile);
+	} // for y
+	free(pBitmap);
+	free(pTemp);
+	fclose(thefile);
+    } // ISBIC to BMP
     return 0;
 } /* main() */
 
